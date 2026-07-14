@@ -1,17 +1,16 @@
 {
   "id": "agent-avatar",
   "name": "Agent头像设置",
-  "version": "2.0.0",
-  "type": "general",
-  "description": "自定义所有智能体的头像，支持上传图片和远程URL",
+  "version": "3.0.0",
+  "type": "frontend",
+  "description": "自定义所有智能体的头像，支持上传图片、远程URL和本地文件引用",
   "description_i18n": {
-    "zh-CN": "自定义所有智能体的头像，支持上传图片和远程URL",
-    "en-US": "Set custom avatars for all agents. Supports image upload and remote URLs."
+    "zh-CN": "自定义所有智能体的头像，支持上传图片、远程URL和本地文件引用",
+    "en-US": "Set custom avatars for all agents. Supports image upload, remote URLs, and local file references."
   },
   "author": "Levodoubt",
   "entry": {
-    "backend": "plugin.py",
-    "frontend": "dist/index.js"
+    "frontend": "index.js"
   },
   "min_version": "2.0.0",
   "qwenpaw_version": {
