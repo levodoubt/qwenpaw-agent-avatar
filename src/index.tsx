@@ -1,54 +1,64 @@
 // ────────────────────────────────────────────────────────────────────
-// Agent Avatar Plugin — Frontend Entry (Pure Frontend, no Python backend)
-// Stores config in localStorage. Works with Tauri Desktop.
+// Agent Avatar Plugin — Frontend Entry
+// Backend-driven: avatar config stored per-agent in workspace directory
 // ────────────────────────────────────────────────────────────────────
 
 const { React, antd } = window.QwenPaw.host;
 const pluginId = "agent-avatar";
 
-// ── LocalStorage-based storage ───────────────────────────────────────
-let sAvatarCache: Record<string, any> = {};
+// ── Backend API helper (host.fetch auto-prepends /api) ─────────────
+function api(path: string, options?: RequestInit): Promise<Response> {
+  return window.QwenPaw.host.fetch(`/agent-avatar${path}`, options);
+}
+
+// ── Agent-scoped avatar config & name cache ───────────────────────
+let sAvatarConfig: Record<string, any> = {};
 let sAgentNameCache: Record<string, string> = {};
 
-function loadAvatarCache(): void {
+async function refreshAvatarConfig(): Promise<void> {
   try {
-    const raw = localStorage.getItem("agent-avatar-config");
-    sAvatarCache = raw ? JSON.parse(raw) : {};
+    const resp = await api("/config");
+    if (resp.ok) {
+      const data = await resp.json();
+      sAvatarConfig = data.agents || {};
+    } else {
+      sAvatarConfig = {};
+    }
   } catch {
-    sAvatarCache = {};
+    sAvatarConfig = {};
   }
 }
 
-function loadAgentNameCache(): void {
+async function refreshAgentNames(): Promise<void> {
   try {
-    const raw = localStorage.getItem("agent-avatar-agents");
-    sAgentNameCache = raw ? JSON.parse(raw) : {};
-  } catch {}
+    const resp = await api("/agents");
+    if (resp.ok) {
+      const data = await resp.json();
+      for (const a of data.agents || []) {
+        if (a.id && a.name) sAgentNameCache[a.id] = a.name;
+      }
+    }
+  } catch {
+    // name fetch failed — fine, will fall back to agent.id
+  }
 }
 
-function syncCaches() {
-  loadAvatarCache();
-  loadAgentNameCache();
-}
-
-syncCaches();
-
-function getCachedAvatar(agentId: string): string | null {
-  const entry = sAvatarCache[agentId];
+function getAvatarUrl(agentId: string): string | null {
+  const entry = sAvatarConfig[agentId];
   if (!entry) return null;
-  return entry.type === "file" ? entry.data : entry.url ?? null;
+  return entry.value ?? null;
 }
 
-function getCachedAgentName(agentId: string): string | null {
+function getAgentName(agentId: string): string | null {
   return sAgentNameCache[agentId] ?? null;
 }
 
-// ── Apply avatar to welcome & header ────────────────────────────────
-function applyAvatarToCurrentAgent() {
+// ── Apply avatar to welcome & header ──────────────────────────────
+async function applyAvatar() {
   const agentId = window.QwenPaw.host.getSelectedAgentId();
   if (!agentId) return;
-  const url = getCachedAvatar(agentId);
-  const nick = getCachedAgentName(agentId) || agentId;
+  const url = getAvatarUrl(agentId);
+  const nick = getAgentName(agentId) || agentId;
 
   window.QwenPaw.chat.welcome.set(pluginId, {
     avatar: url ?? undefined,
@@ -70,12 +80,11 @@ function applyAvatarToCurrentAgent() {
   });
 }
 
-// ── Watcher component ───────────────────────────────────────────────
+// ── Watcher component ─────────────────────────────────────────────
 function AvatarWatcher() {
   const agent = window.QwenPaw.host.useSelectedAgent();
   React.useEffect(() => {
-    syncCaches();
-    applyAvatarToCurrentAgent();
+    Promise.all([refreshAvatarConfig(), refreshAgentNames()]).then(applyAvatar);
   }, [agent?.id]);
   return null;
 }
@@ -84,48 +93,15 @@ window.QwenPaw.slot.fill(pluginId, "content.statusBar", () =>
   React.createElement(AvatarWatcher),
 );
 
-// ── Settings Page ───────────────────────────────────────────────────
-function saveAvatarConfig(config: Record<string, any>) {
-  localStorage.setItem("agent-avatar-config", JSON.stringify(config));
-  loadAvatarCache();
-  syncCaches();
-  applyAvatarToCurrentAgent();
-}
-
-function handleSetUrl(agentId: string, url: string) {
-  if (!url) return;
-  sAvatarCache[agentId] = { type: "url", url, agentId, updatedAt: Date.now() };
-  saveAvatarConfig(sAvatarCache);
-}
-
-async function handleUpload(agentId: string, file: File) {
-  if (!file) return;
-  const dataUrl = await new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result as string);
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(file);
-  });
-  sAvatarCache[agentId] = {
-    type: "file",
-    data: dataUrl,
-    filename: file.name,
-    agentId,
-    updatedAt: Date.now(),
-  };
-  saveAvatarConfig(sAvatarCache);
-}
-
-function handleClear(agentId: string) {
-  delete sAvatarCache[agentId];
-  saveAvatarConfig(sAvatarCache);
+// ── Settings Page ──────────────────────────────────────────────────
+function refreshCaches() {
+  // no-op in backend mode: data loaded via API
 }
 
 async function loadAgents(): Promise<any[]> {
   const agents: any[] = [];
   try {
-    // Tauri Desktop host.fetch auto-prepends /api, so use relative path
-    const resp = await window.QwenPaw.host.fetch("/agents");
+    const resp = await api("/agents");
     if (resp.ok) {
       const data = await resp.json();
       for (const agent of data.agents || []) {
@@ -134,23 +110,7 @@ async function loadAgents(): Promise<any[]> {
           sAgentNameCache[agent.id] = agent.name;
         }
       }
-    } else {
-      // Fallback: try native fetch
-      const resp2 = await fetch("/api/agents");
-      if (resp2.ok) {
-        const data = await resp2.json();
-        for (const agent of data.agents || []) {
-          if (agent.id && agent.name) {
-            agents.push(agent);
-            sAgentNameCache[agent.id] = agent.name;
-          }
-        }
-      }
     }
-    localStorage.setItem(
-      "agent-avatar-agents",
-      JSON.stringify(sAgentNameCache),
-    );
   } catch (e: any) {
     console.warn("[AgentAvatar] Failed to load agents:", e?.message || e);
   }
@@ -159,7 +119,7 @@ async function loadAgents(): Promise<any[]> {
 
 function AvatarSettingsPage() {
   const [agents, setAgents] = React.useState<any[]>([]);
-  const [avatarConfig, setAvatarConfig] = React.useState<Record<string, any>>({});
+  const [pageConfig, setPageConfig] = React.useState<Record<string, any>>({});
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
   const [savingId, setSavingId] = React.useState<string | null>(null);
@@ -176,23 +136,22 @@ function AvatarSettingsPage() {
       setError("无法加载 Agent 列表，请确认 QwenPaw 桌面端运行正常。");
     }
 
-    loadAvatarCache();
-    setAvatarConfig(sAvatarCache);
+    await refreshAvatarConfig();
+    setPageConfig(sAvatarConfig);
     setLoading(false);
   }, []);
 
   React.useEffect(() => {
-    syncCaches();
     loadData();
   }, [loadData]);
 
-  const getAvatarUrl = React.useCallback(
+  const getPageAvatarUrl = React.useCallback(
     (agentId: string): string | null => {
-      const entry = avatarConfig[agentId];
+      const entry = pageConfig[agentId];
       if (!entry) return null;
-      return entry.type === "file" ? entry.data : entry.url ?? null;
+      return entry.value ?? null;
     },
-    [avatarConfig],
+    [pageConfig],
   );
 
   const onSetUrl = React.useCallback(
@@ -201,11 +160,18 @@ function AvatarSettingsPage() {
       if (!url) return;
       setSavingId(agentId);
       try {
-        handleSetUrl(agentId, url);
+        const resp = await api(`/config/${agentId}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type: "url", url }),
+        });
+        if (!resp.ok) {
+          console.warn("[AgentAvatar] PUT config failed:", resp.status);
+        }
         setUrlInputs((prev) => ({ ...prev, [agentId]: "" }));
+        await loadData();
       } finally {
         setSavingId(null);
-        await loadData();
       }
     },
     [urlInputs, loadData],
@@ -215,11 +181,19 @@ function AvatarSettingsPage() {
     async (agentId: string, file: File, onSuccess?: () => void) => {
       setSavingId(agentId);
       try {
-        if (file && file instanceof File) {
-          await handleUpload(agentId, file);
+        if (file) {
+          const formData = new FormData();
+          formData.append("file", file);
+          const resp = await api(`/upload/${agentId}`, {
+            method: "POST",
+            body: formData,
+          });
+          if (!resp.ok) {
+            console.warn("[AgentAvatar] Upload failed:", resp.status);
+          }
+          onSuccess?.();
+          await loadData();
         }
-        onSuccess?.();
-        await loadData();
       } finally {
         setSavingId(null);
       }
@@ -231,7 +205,10 @@ function AvatarSettingsPage() {
     async (agentId: string) => {
       setSavingId(agentId);
       try {
-        handleClear(agentId);
+        const resp = await api(`/config/${agentId}`, { method: "DELETE" });
+        if (!resp.ok) {
+          console.warn("[AgentAvatar] DELETE config failed:", resp.status);
+        }
         await loadData();
       } finally {
         setSavingId(null);
@@ -283,7 +260,7 @@ function AvatarSettingsPage() {
           antd.Space,
           { direction: "vertical", style: { width: "100%" }, size: 16 },
           agents.map((agent: any) => {
-            const avatarUrl = getAvatarUrl(agent.id);
+            const avatarUrl = getPageAvatarUrl(agent.id);
             const isSaving = savingId === agent.id;
             return React.createElement(
               antd.Card,
@@ -295,6 +272,7 @@ function AvatarSettingsPage() {
               React.createElement(
                 "div",
                 { style: { display: "flex", alignItems: "center", gap: 16 } },
+
                 // Avatar preview
                 React.createElement(
                   "div",
@@ -321,28 +299,19 @@ function AvatarSettingsPage() {
                     : React.createElement(
                         "span",
                         {
-                          style: {
-                            fontSize: 20,
-                            color: "#bbb",
-                            fontWeight: "bold",
-                          },
+                          style: { fontSize: 20, color: "#bbb", fontWeight: "bold" },
                         },
                         agent.name?.charAt(0)?.toUpperCase() || "?",
                       ),
                 ),
+
                 // Info + controls
                 React.createElement(
                   "div",
                   { style: { flex: 1, minWidth: 0 } },
                   React.createElement(
                     "div",
-                    {
-                      style: {
-                        fontWeight: 600,
-                        fontSize: 15,
-                        marginBottom: 2,
-                      },
-                    },
+                    { style: { fontWeight: 600, fontSize: 15, marginBottom: 2 } },
                     agent.name || agent.id,
                   ),
                   React.createElement(
@@ -359,16 +328,11 @@ function AvatarSettingsPage() {
                     },
                     agent.description || agent.id,
                   ),
+
                   // URL input row
                   React.createElement(
                     "div",
-                    {
-                      style: {
-                        display: "flex",
-                        gap: 8,
-                        alignItems: "center",
-                      },
-                    },
+                    { style: { display: "flex", gap: 8, alignItems: "center" } },
                     React.createElement(antd.Input, {
                       style: { flex: 1 },
                       placeholder: "输入图片 URL…",
@@ -379,11 +343,7 @@ function AvatarSettingsPage() {
                           [agent.id]: e.target.value,
                         })),
                       onPressEnter: () => onSetUrl(agent.id),
-                      prefix: React.createElement(
-                        "span",
-                        { style: { color: "#999" } },
-                        "🔗",
-                      ),
+                      prefix: React.createElement("span", { style: { color: "#999" } }, "🔗"),
                       disabled: isSaving,
                     }),
                     React.createElement(
@@ -397,6 +357,7 @@ function AvatarSettingsPage() {
                       "设置",
                     ),
                   ),
+
                   // Action buttons
                   React.createElement(
                     "div",
@@ -404,8 +365,7 @@ function AvatarSettingsPage() {
                     React.createElement(
                       antd.Upload,
                       {
-                        accept:
-                          "image/png,image/jpeg,image/gif,image/webp,image/svg+xml",
+                        accept: "image/png,image/jpeg,image/gif,image/webp,image/svg+xml",
                         showUploadList: false,
                         customRequest: ({
                           file,

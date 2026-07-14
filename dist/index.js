@@ -3,52 +3,53 @@
   var antd = window.QwenPaw.host.antd;
   var pluginId = "agent-avatar";
 
-  // ── LocalStorage storage ──────────────────────────────────────
-  var avatarCache = {};
+  // ── Backend API helper (host.fetch auto-prepends /api) ─────────
+  function api(path, options) {
+    return window.QwenPaw.host.fetch("/agent-avatar" + path, options || {});
+  }
+
+  var avatarConfig = {};
   var agentNameCache = {};
 
-  function loadAvatarCache() {
+  async function loadAvatarConfig() {
     try {
-      var raw = localStorage.getItem("agent-avatar-config");
-      avatarCache = raw ? JSON.parse(raw) : {};
+      var resp = await api("/config");
+      if (resp.ok) {
+        var data = await resp.json();
+        avatarConfig = data.agents || {};
+      } else {
+        avatarConfig = {};
+      }
     } catch (e) {
-      avatarCache = {};
+      avatarConfig = {};
     }
   }
 
-  function loadAgentNameCache() {
+  async function loadAgentNames() {
     try {
-      var raw = localStorage.getItem("agent-avatar-agents");
-      agentNameCache = raw ? JSON.parse(raw) : {};
-    } catch (e) {
-      agentNameCache = {};
-    }
+      var resp = await api("/agents");
+      if (resp.ok) {
+        var data = await resp.json();
+        for (var i = 0; i < data.agents.length; i++) {
+          var a = data.agents[i];
+          if (a.id && a.name) agentNameCache[a.id] = a.name;
+        }
+      }
+    } catch (e) {}
   }
 
-  function syncCaches() {
-    loadAvatarCache();
-    loadAgentNameCache();
-  }
-
-  syncCaches();
-
-  function getCachedAvatar(agentId) {
-    var entry = avatarCache[agentId];
+  function getAvatarUrl(agentId) {
+    var entry = avatarConfig[agentId];
     if (!entry) return null;
-    if (entry.type === "file") return entry.data;
-    return entry.url || null;
-  }
-
-  function getCachedAgentName(agentId) {
-    return agentNameCache[agentId] || null;
+    return entry.value || null;
   }
 
   // ── Apply avatar to current agent ─────────────────────────────
-  function applyAvatar() {
+  async function applyAvatar() {
     var agentId = window.QwenPaw.host.getSelectedAgentId();
     if (!agentId) return;
-    var url = getCachedAvatar(agentId);
-    var nick = getCachedAgentName(agentId) || agentId;
+    var url = getAvatarUrl(agentId);
+    var nick = agentNameCache[agentId] || agentId;
 
     window.QwenPaw.chat.welcome.set(pluginId, {
       avatar: url || undefined,
@@ -71,12 +72,11 @@
     });
   }
 
-  // ── Watcher (reacts to agent switch) ──────────────────────────
+  // ── Watcher ───────────────────────────────────────────────────
   function AvatarWatcher() {
     var agent = window.QwenPaw.host.useSelectedAgent();
     React.useEffect(function () {
-      syncCaches();
-      applyAvatar();
+      Promise.all([loadAvatarConfig(), loadAgentNames()]).then(applyAvatar);
     }, [agent ? agent.id : null]);
     return null;
   }
@@ -85,45 +85,11 @@
     return React.createElement(AvatarWatcher);
   });
 
-  // ── Persistence helpers ───────────────────────────────────────
-  function saveConfig() {
-    localStorage.setItem("agent-avatar-config", JSON.stringify(avatarCache));
-    syncCaches();
-    applyAvatar();
-  }
-
-  function setUrl(agentId, url) {
-    if (!url) return;
-    avatarCache[agentId] = {
-      type: "url",
-      url: url,
-      agentId: agentId,
-      updatedAt: Date.now()
-    };
-    saveConfig();
-  }
-
-  function setFile(agentId, dataUrl, filename) {
-    avatarCache[agentId] = {
-      type: "file",
-      data: dataUrl,
-      filename: filename,
-      agentId: agentId,
-      updatedAt: Date.now()
-    };
-    saveConfig();
-  }
-
-  function clearAvatar(agentId) {
-    delete avatarCache[agentId];
-    saveConfig();
-  }
-
-  // ── Load agents from API ──────────────────────────────────────
+  // ── Fetch agents (with name caching) ──────────────────────────
   async function fetchAgents() {
     var result = [];
     try {
-      var resp = await window.QwenPaw.host.fetch("/agents");
+      var resp = await api("/agents");
       if (resp.ok) {
         var data = await resp.json();
         for (var i = 0; i < data.agents.length; i++) {
@@ -133,35 +99,22 @@
             agentNameCache[agent.id] = agent.name;
           }
         }
-      } else {
-        var resp2 = await fetch("/api/agents");
-        if (resp2.ok) {
-          var data2 = await resp2.json();
-          for (var j = 0; j < data2.agents.length; j++) {
-            var agent2 = data2.agents[j];
-            if (agent2.id && agent2.name) {
-              result.push(agent2);
-              agentNameCache[agent2.id] = agent2.name;
-            }
-          }
-        }
       }
-      localStorage.setItem("agent-avatar-agents", JSON.stringify(agentNameCache));
     } catch (e) {
       console.warn("[AgentAvatar] Failed to load agents:", e.message || e);
     }
     return result;
   }
 
-  // ── Settings Page Component ───────────────────────────────────
+  // ── Settings Page ─────────────────────────────────────────────
   function AvatarSettingsPage() {
     var agentsState = React.useState([]);
     var agents = agentsState[0];
     var setAgents = agentsState[1];
 
     var configState = React.useState({});
-    var avatarConfig = configState[0];
-    var setAvatarConfig = configState[1];
+    var pageConfig = configState[0];
+    var setPageConfig = configState[1];
 
     var loadingState = React.useState(true);
     var loading = loadingState[0];
@@ -190,21 +143,19 @@
         setError("无法加载 Agent 列表，请确认 QwenPaw 桌面端运行正常。");
       }
 
-      loadAvatarCache();
-      setAvatarConfig(avatarCache);
+      await loadAvatarConfig();
+      setPageConfig(avatarConfig);
       setLoading(false);
     }, []);
 
     React.useEffect(function () {
-      syncCaches();
       loadData();
     }, [loadData]);
 
-    function getAvatarUrl(agentId) {
-      var entry = avatarConfig[agentId];
+    function getPageAvatarUrl(agentId) {
+      var entry = pageConfig[agentId];
       if (!entry) return null;
-      if (entry.type === "file") return entry.data;
-      return entry.url || null;
+      return entry.value || null;
     }
 
     var onSetUrl = React.useCallback(async function (agentId) {
@@ -212,7 +163,14 @@
       if (!url) return;
       setSavingId(agentId);
       try {
-        setUrl(agentId, url);
+        var resp = await api("/config/" + agentId, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type: "url", url: url })
+        });
+        if (!resp.ok) {
+          console.warn("[AgentAvatar] PUT config failed:", resp.status);
+        }
         setUrlInputs(function (prev) {
           var next = {};
           for (var k in prev) next[k] = prev[k];
@@ -229,13 +187,15 @@
       setSavingId(agentId);
       try {
         if (file) {
-          var dataUrl = await new Promise(function (resolve, reject) {
-            var reader = new FileReader();
-            reader.onload = function () { resolve(reader.result); };
-            reader.onerror = function () { reject(reader.error); };
-            reader.readAsDataURL(file);
+          var fd = new FormData();
+          fd.append("file", file);
+          var resp = await api("/upload/" + agentId, {
+            method: "POST",
+            body: fd
           });
-          setFile(agentId, dataUrl, file.name);
+          if (!resp.ok) {
+            console.warn("[AgentAvatar] Upload failed:", resp.status);
+          }
           if (onSuccess) onSuccess();
           await loadData();
         }
@@ -247,14 +207,19 @@
     var onClear = React.useCallback(async function (agentId) {
       setSavingId(agentId);
       try {
-        clearAvatar(agentId);
+        var resp = await api("/config/" + agentId, {
+          method: "DELETE"
+        });
+        if (!resp.ok) {
+          console.warn("[AgentAvatar] DELETE config failed:", resp.status);
+        }
         await loadData();
       } finally {
         setSavingId(null);
       }
     }, [loadData]);
 
-    // ── Render ──────────────────────────────────────────────────
+    // ── Render ──────────────────────────────────────────────
     if (loading) {
       return React.createElement(antd.Spin, {
         style: { display: "block", margin: "80px auto" },
@@ -283,7 +248,7 @@
     var agentCards = [];
     for (var i = 0; i < agents.length; i++) {
       var agent = agents[i];
-      var avatarUrl = getAvatarUrl(agent.id);
+      var avatarUrl = getPageAvatarUrl(agent.id);
       var isSaving = savingId === agent.id;
 
       agentCards.push(

@@ -2,7 +2,7 @@
   "id": "agent-avatar",
   "name": "Agent头像设置",
   "version": "2.0.0",
-  "type": "frontend",
+  "type": "general",
   "description": "自定义所有智能体的头像，支持上传图片和远程URL",
   "description_i18n": {
     "zh-CN": "自定义所有智能体的头像，支持上传图片和远程URL",
@@ -10,6 +10,7 @@
   },
   "author": "Levodoubt",
   "entry": {
+    "backend": "plugin.py",
     "frontend": "dist/index.js"
   },
   "min_version": "2.0.0",
